@@ -1,14 +1,11 @@
 import os
 import sqlite3
 from datetime import datetime
-from flask import Flask, render_template, jsonify, request
+from flask import Flask, render_template, jsonify
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, MessageHandler, CommandHandler, ContextTypes, filters
 import asyncio
-import nest_asyncio
-
-# تطبيق تعديلات nest_asyncio للسماح بتشغيل asyncio في بيئات متعددة
-nest_asyncio.apply()
+from threading import Thread
 
 # تهيئة تطبيق Flask
 app = Flask(__name__)
@@ -69,30 +66,6 @@ def api_top_members():
 
     conn.close()
     return jsonify(members)
-    
-@app.route('/index')
-def index():
-    return render_template('index.html')
-    
-@app.route('/store')
-def store():
-    return render_template('store.html')
-
-@app.route('/contests')
-def contests():
-    return render_template('contests.html')
-
-@app.route('/report')
-def report():
-    return render_template('report.html')
-
-@app.route('/support')
-def support():
-    return render_template('support.html')
-
-@app.route('/law')
-def law():
-    return render_template('law.html')
 
 # ============== أوامر التليجرام ==============
 
@@ -100,26 +73,30 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id == GROUP_ID:
         await update.message.reply_text('مرحباً بكم في بوت تفاعل SM 1%! اكتب "توب" لرؤية الأكثر تفاعلاً')
 
-async def track_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ID:
         return
 
-    # التحقق من الأوامر العربية أولاً
     text = update.message.text.strip().lower()
-    if text == 'توب':
+    
+    # معالجة الأوامر العربية
+    if text in ['توب', 'top']:
         await top_members(update, context)
         return
-    elif text == 'تصنيفي':
+    elif text in ['تصنيفي', 'myrank']:
         await my_rank(update, context)
         return
+    
+    # تتبع الرسائل العادية
+    await track_message(update, context)
 
+async def track_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     now = datetime.now().isoformat()
 
     conn = sqlite3.connect('interactions.db')
     cursor = conn.cursor()
 
-    # إدخال أو تحديث بيانات المستخدم
     cursor.execute('''
     INSERT OR IGNORE INTO users (user_id, username, first_name, last_name, message_count, last_interaction)
     VALUES (?, ?, ?, ?, 0, ?)
@@ -139,9 +116,6 @@ async def track_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
 
 async def top_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != GROUP_ID:
-        return
-
     conn = sqlite3.connect('interactions.db')
     cursor = conn.cursor()
 
@@ -161,14 +135,10 @@ async def top_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
 
 async def my_rank(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != GROUP_ID:
-        return
-
     user = update.effective_user
     conn = sqlite3.connect('interactions.db')
     cursor = conn.cursor()
 
-    # الحصول على عدد رسائل المستخدم
     cursor.execute('SELECT message_count FROM users WHERE user_id = ?', (user.id,))
     user_data = cursor.fetchone()
 
@@ -177,12 +147,7 @@ async def my_rank(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         return
 
-    # الحصول على ترتيب المستخدم
-    cursor.execute('''
-    SELECT COUNT(*) FROM users 
-    WHERE message_count > ?
-    ''', (user_data[0],))
-
+    cursor.execute('SELECT COUNT(*) FROM users WHERE message_count > ?', (user_data[0],))
     rank = cursor.fetchone()[0] + 1
     message_count = user_data[0]
 
@@ -198,28 +163,26 @@ async def my_rank(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ============== تشغيل التطبيق ==============
 
+def run_flask():
+    app.run(host='0.0.0.0', port=8080, debug=False, use_reloader=False)
+
 async def run_bot():
-    init_db()
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # إضافة معالجات الرسائل
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, track_message))
     application.add_handler(CommandHandler("start", start))
-    
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
     await application.run_polling()
 
-def run_flask():
-    app.run(host='0.0.0.0', port=8080)
-
-async def main():
+def main():
     # تشغيل Flask في thread منفصل
-    import threading
-    flask_thread = threading.Thread(target=run_flask)
+    flask_thread = Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
 
     # تشغيل بوت التليجرام
-    await run_bot()
+    asyncio.run(run_bot())
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    init_db()
+    main()
